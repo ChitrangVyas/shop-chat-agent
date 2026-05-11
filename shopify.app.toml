@@ -2,7 +2,7 @@
 
 client_id = "d0f32fd37c2bb5c15da1b37fa7b8558f"
 name = "Opal Infotech - Chat Agent"
-application_url = "https://shop-chat-agent.com"
+application_url = "https://opal-shopify-chatbot.vercel.app"
 embedded = true
 
 [build]
@@ -17,4 +17,4 @@ api_version = "2026-07"
 scopes = "unauthenticated_read_product_listings"
 
 [auth]
-redirect_urls = [ "https://shop-chat-agent.com/api/auth" ]
+redirect_urls = [ "https://opal-shopify-chatbot.vercel.app/api/auth" ]

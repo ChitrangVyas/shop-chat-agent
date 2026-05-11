@@ -157,7 +157,7 @@ export default function Index() {
       <s-section heading="Enable Theme Extension" slot="aside">
         <s-stack gap="base">
           <s-paragraph>
-            In Shopify Admin go to Online Store > Themes > Customize.
+            In Shopify Admin go to Online Store &rarr; Themes &rarr; Customize.
           </s-paragraph>
           <s-paragraph>
             Open App embeds, turn on "AI Chat Assistant", and click Save.

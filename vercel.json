@@ -1,5 +1,6 @@
 {
   "rewrites": [
-    { "source": "/apps/chat-agent-opal/:match*", "destination": "/api/chat/:match*" }
+    { "source": "/apps/chat-agent-opal/chat", "destination": "/api/chat" },
+    { "source": "/apps/chat-agent-opal/chat/:match*", "destination": "/api/chat/:match*" }
   ]
 }
