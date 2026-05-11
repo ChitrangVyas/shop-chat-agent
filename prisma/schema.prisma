@@ -80,3 +80,13 @@ model CustomerAccountUrls {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 }
+
+model ShopConfig {
+  id           String   @id @default(cuid())
+  shopDomain   String   @unique
+  claudeApiKey String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([shopDomain])
+}

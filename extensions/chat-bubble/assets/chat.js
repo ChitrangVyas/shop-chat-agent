@@ -465,6 +465,46 @@
      */
     API: {
       /**
+       * Get the shopper's current storefront cart for request context.
+       * @returns {Promise<Object|null>} Compact cart snapshot or null when unavailable
+       */
+      getStorefrontCartContext: async function() {
+        try {
+          const response = await fetch('/cart.js', {
+            method: 'GET',
+            credentials: 'same-origin',
+            headers: {
+              'Accept': 'application/json'
+            }
+          });
+
+          if (!response.ok) {
+            return null;
+          }
+
+          const cart = await response.json();
+          const items = Array.isArray(cart.items) ? cart.items.slice(0, 10).map((item) => ({
+            title: item.product_title || item.title || 'Product',
+            variant_id: item.variant_id,
+            quantity: item.quantity,
+            line_price: item.line_price,
+            final_line_price: item.final_line_price
+          })) : [];
+
+          return {
+            token: cart.token || null,
+            item_count: cart.item_count || 0,
+            total_price: cart.total_price || 0,
+            currency: cart.currency || null,
+            items
+          };
+        } catch (error) {
+          console.warn('Unable to read storefront cart context:', error);
+          return null;
+        }
+      },
+
+      /**
        * Stream a response from the API
        * @param {string} userMessage - User's message text
        * @param {string} conversationId - Conversation ID for context
@@ -475,21 +515,32 @@
 
         try {
           const promptType = window.shopChatConfig?.promptType || "standardAssistant";
+          const storefrontCart = await this.getStorefrontCartContext();
           const requestBody = JSON.stringify({
             message: userMessage,
             conversation_id: conversationId,
-            prompt_type: promptType
+            prompt_type: promptType,
+            storefront_cart: storefrontCart
           });
 
-          const streamUrl = 'https://localhost:3458/chat';
+          // Dynamically determine backend URL
+          let streamUrl;
+          if (window.shopChatConfig?.backendUrl) {
+            streamUrl = window.shopChatConfig.backendUrl + "/chat";
+          } else {
+            // Default: same origin, works for Vercel/Shopify App Proxy
+            streamUrl = "/apps/chat-agent-opal/chat";
+          }
           const shopId = window.shopId;
+          const shopDomain = window.shopDomain;
 
           const response = await fetch(streamUrl, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               'Accept': 'text/event-stream',
-              'X-Shopify-Shop-Id': shopId
+              'X-Shopify-Shop-Id': shopId,
+              'X-Shopify-Shop-Domain': shopDomain
             },
             body: requestBody
           });
@@ -629,8 +680,13 @@
           loadingMessage.textContent = "Loading conversation history...";
           messagesContainer.appendChild(loadingMessage);
 
-          // Fetch history from the server
-          const historyUrl = `https://localhost:3458/chat?history=true&conversation_id=${encodeURIComponent(conversationId)}`;
+          // Dynamically determine backend URL
+          let historyUrl;
+          if (window.shopChatConfig?.backendUrl) {
+            historyUrl = `${window.shopChatConfig.backendUrl}/chat?history=true&conversation_id=${encodeURIComponent(conversationId)}`;
+          } else {
+            historyUrl = `/apps/chat-agent-opal/chat?history=true&conversation_id=${encodeURIComponent(conversationId)}`;
+          }
           console.log('Fetching history from:', historyUrl);
 
           const response = await fetch(historyUrl, {
@@ -638,8 +694,7 @@
             headers: {
               'Accept': 'application/json',
               'Content-Type': 'application/json'
-            },
-            mode: 'cors'
+            }
           });
 
           if (!response.ok) {
@@ -779,8 +834,12 @@
           attemptCount++;
 
           try {
-            const tokenUrl = 'https://localhost:3458/auth/token-status?conversation_id=' +
-              encodeURIComponent(conversationId);
+            let tokenUrl;
+            if (window.shopChatConfig?.backendUrl) {
+              tokenUrl = `${window.shopChatConfig.backendUrl}/auth/token-status?conversation_id=${encodeURIComponent(conversationId)}`;
+            } else {
+              tokenUrl = `/apps/chat-agent-opal/auth/token-status?conversation_id=${encodeURIComponent(conversationId)}`;
+            }
             const response = await fetch(tokenUrl);
 
             if (!response.ok) {

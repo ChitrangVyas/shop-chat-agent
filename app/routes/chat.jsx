@@ -1,9 +1,22 @@
 /**
  * Chat API Route
  * Handles chat interactions with Claude API and tools
+ *
+ * Production/Vercel compatibility notes:
+ * - The theme extension chat widget now uses a dynamic backend URL (window.shopChatConfig.backendUrl or /apps/chat-agent-opal/).
+ * - For Vercel, ensure this route is exposed at /api/chat or /apps/chat-agent-opal/chat (via Vercel config or Shopify App Proxy).
+ * - Set CLAUDE_API_KEY and DATABASE_URL in Vercel environment variables.
+ * - For Shopify App Proxy, configure the proxy path to forward /apps/chat-agent-opal/* to this backend.
  */
+// If deploying to Vercel, ensure this file is included in the Vercel build output and the route is mapped correctly.
 import MCPClient from "../mcp-client";
-import { saveMessage, getConversationHistory, storeCustomerAccountUrls, getCustomerAccountUrls as getCustomerAccountUrlsFromDb } from "../db.server";
+import {
+  saveMessage,
+  getConversationHistory,
+  storeCustomerAccountUrls,
+  getCustomerAccountUrls as getCustomerAccountUrlsFromDb,
+  getShopClaudeApiKey,
+} from "../db.server";
 import AppConfig from "../services/config.server";
 import { createSseStream } from "../services/streaming.server";
 import { createClaudeService } from "../services/claude.server";
@@ -67,6 +80,7 @@ async function handleChatRequest(request) {
     // Get message data from request body
     const body = await request.json();
     const userMessage = body.message;
+    const storefrontCart = body.storefront_cart || null;
 
     // Validate required message
     if (!userMessage) {
@@ -87,6 +101,7 @@ async function handleChatRequest(request) {
         userMessage,
         conversationId,
         promptType,
+        storefrontCart,
         stream
       });
     });
@@ -110,6 +125,7 @@ async function handleChatRequest(request) {
  * @param {string} params.userMessage - The user's message
  * @param {string} params.conversationId - The conversation ID
  * @param {string} params.promptType - The prompt type
+ * @param {Object|null} params.storefrontCart - Existing storefront cart snapshot from theme
  * @param {Object} params.stream - Stream manager for sending responses
  */
 async function handleChatSession({
@@ -117,16 +133,47 @@ async function handleChatSession({
   userMessage,
   conversationId,
   promptType,
+  storefrontCart,
   stream
 }) {
   // Initialize services
-  const claudeService = createClaudeService();
   const toolService = createToolService();
 
   // Initialize MCP client
   const shopId = request.headers.get("X-Shopify-Shop-Id");
   const shopDomain = request.headers.get("Origin");
-  const { mcpApiUrl } = await getCustomerAccountUrls(shopDomain, conversationId);
+  
+  if (!shopDomain) {
+    stream.sendMessage({
+      type: 'error',
+      error: 'Missing Origin header - shop domain cannot be determined'
+    });
+    throw new Error('Missing Origin header');
+  }
+
+  const explicitShopDomain = request.headers.get("X-Shopify-Shop-Domain") || "";
+  const resolvedShopDomain = explicitShopDomain || new URL(shopDomain).hostname;
+  const shopClaudeApiKey = await getShopClaudeApiKey(resolvedShopDomain);
+  const claudeApiKey = shopClaudeApiKey || process.env.CLAUDE_API_KEY;
+
+  if (!claudeApiKey) {
+    stream.sendMessage({
+      type: 'error',
+      error: 'Claude API key is not configured for this shop. Add it in the embedded app settings.'
+    });
+    throw new Error('Claude API key is not configured');
+  }
+
+  const claudeService = createClaudeService(claudeApiKey);
+
+  let customerAccountUrls = null;
+  try {
+    customerAccountUrls = await getCustomerAccountUrls(shopDomain, conversationId);
+  } catch (error) {
+    console.warn('Failed to get customer account URLs:', error.message);
+  }
+  
+  const mcpApiUrl = customerAccountUrls?.mcpApiUrl;
 
   const mcpClient = new MCPClient(
     shopDomain,
@@ -176,6 +223,13 @@ async function handleChatSession({
       };
     });
 
+    if (storefrontCart && typeof storefrontCart === 'object') {
+      conversationHistory.push({
+        role: 'assistant',
+        content: `Storefront cart context (existing shopper cart, read-only): ${JSON.stringify(storefrontCart)}. Use this context when the user asks what is currently in cart. If tool output differs, explain both clearly.`
+      });
+    }
+
     // Execute the conversation stream
     let finalMessage = { role: 'user', content: userMessage };
 
@@ -214,7 +268,13 @@ async function handleChatSession({
           // Handle tool use requests
           onToolUse: async (content) => {
             const toolName = content.name;
-            const toolArgs = content.input;
+            const rawToolArgs = content.input;
+            const toolArgs = withStorefrontCartIdentity(
+              toolName,
+              rawToolArgs,
+              storefrontCart,
+              mcpClient.tools
+            );
             const toolUseId = content.id;
 
             const toolUseMessage = `Calling tool: ${toolName} with arguments: ${JSON.stringify(toolArgs)}`;
@@ -276,9 +336,90 @@ async function handleChatSession({
       });
     }
   } catch (error) {
-    // The streaming handler takes care of error handling
+    console.error('Error in chat session:', error);
+    stream.sendMessage({
+      type: 'error',
+      error: error.message || 'An error occurred while processing your message'
+    });
     throw error;
   }
+}
+
+/**
+ * Adds storefront cart identity to cart tool calls when missing.
+ * @param {string} toolName - Tool name
+ * @param {Object} toolArgs - Tool input arguments
+ * @param {Object|null} storefrontCart - Existing storefront cart snapshot
+ * @param {Array} tools - Available MCP tools with input schemas
+ * @returns {Object} Updated arguments
+ */
+function withStorefrontCartIdentity(toolName, toolArgs, storefrontCart, tools) {
+  if (!isCartTool(toolName)) {
+    return toolArgs;
+  }
+
+  const cartIdentity = storefrontCart?.token || storefrontCart?.id || null;
+  const normalizedArgs = toolArgs && typeof toolArgs === 'object' ? { ...toolArgs } : {};
+
+  if (!cartIdentity || hasCartIdentityArg(normalizedArgs)) {
+    return normalizedArgs;
+  }
+
+  const cartArgName = getCartArgNameFromSchema(toolName, tools);
+  if (!cartArgName) {
+    return normalizedArgs;
+  }
+
+  normalizedArgs[cartArgName] = cartIdentity;
+  return normalizedArgs;
+}
+
+/**
+ * Detects whether the tool is cart-related.
+ * @param {string} toolName - Tool name
+ * @returns {boolean} True when tool is cart-related
+ */
+function isCartTool(toolName) {
+  return typeof toolName === 'string' && toolName.toLowerCase().includes('cart');
+}
+
+/**
+ * Checks whether cart identity is already present in arguments.
+ * @param {Object} toolArgs - Tool arguments
+ * @returns {boolean} True when cart id/token is already provided
+ */
+function hasCartIdentityArg(toolArgs) {
+  const keys = Object.keys(toolArgs || {});
+  return keys.some((key) => /^(cart_id|cartId|id|cart_token|cartToken|token)$/i.test(key));
+}
+
+/**
+ * Picks the best cart identity argument name based on tool schema.
+ * @param {string} toolName - Tool name
+ * @param {Array} tools - Available MCP tools
+ * @returns {string|null} Argument name or null if unknown
+ */
+function getCartArgNameFromSchema(toolName, tools) {
+  const tool = (tools || []).find((entry) => entry.name === toolName);
+  const properties = tool?.input_schema?.properties || {};
+  const propertyNames = Object.keys(properties);
+
+  const preferredNames = [
+    'cart_id',
+    'cartId',
+    'cart_token',
+    'cartToken',
+    'token',
+    'id'
+  ];
+
+  for (const name of preferredNames) {
+    if (propertyNames.includes(name)) {
+      return name;
+    }
+  }
+
+  return propertyNames.find((name) => /cart.*(id|token)|^(id|token)$/i.test(name)) || null;
 }
 
 /**
@@ -298,9 +439,17 @@ async function getCustomerAccountUrls(shopDomain, conversationId) {
     // If not, query for it from the Shopify API
     const { hostname } = new URL(shopDomain);
 
+    console.log(`Fetching customer account URLs from ${hostname}`);
+
     const urls = await Promise.all([
-      fetch(`https://${hostname}/.well-known/customer-account-api`).then(res => res.json()),
-      fetch(`https://${hostname}/.well-known/openid-configuration`).then(res => res.json()),
+      fetch(`https://${hostname}/.well-known/customer-account-api`).then(res => {
+        if (!res.ok) throw new Error(`Failed to fetch customer-account-api: ${res.status}`);
+        return res.json();
+      }),
+      fetch(`https://${hostname}/.well-known/openid-configuration`).then(res => {
+        if (!res.ok) throw new Error(`Failed to fetch openid-configuration: ${res.status}`);
+        return res.json();
+      }),
     ]).then(async ([mcpResponse, openidResponse]) => {
       const response = {
         mcpApiUrl: mcpResponse.mcp_api,
@@ -321,7 +470,7 @@ async function getCustomerAccountUrls(shopDomain, conversationId) {
     return urls;
   } catch (error) {
     console.error("Error getting customer MCP API URL:", error);
-    return null;
+    throw error;
   }
 }
 

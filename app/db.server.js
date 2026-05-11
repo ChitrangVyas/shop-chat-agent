@@ -257,3 +257,99 @@ export async function getCustomerAccountUrls(conversationId) {
     return null;
   }
 }
+
+/**
+ * Save or update a shop-specific Claude API key.
+ * @param {string} shopDomain - The myshopify domain for the shop
+ * @param {string} claudeApiKey - Claude API key value
+ * @returns {Promise<Object>} Saved shop config
+ */
+export async function saveShopClaudeApiKey(shopDomain, claudeApiKey) {
+  try {
+    if (!prisma.shopConfig) {
+      throw new Error("Prisma client is missing shopConfig delegate. Restart the app process after prisma generate.");
+    }
+
+    return await prisma.shopConfig.upsert({
+      where: { shopDomain },
+      create: {
+        shopDomain,
+        claudeApiKey,
+      },
+      update: {
+        claudeApiKey,
+      },
+    });
+  } catch (error) {
+    console.error('Error saving shop Claude API key:', error);
+    throw error;
+  }
+}
+
+/**
+ * Remove a shop-specific Claude API key.
+ * @param {string} shopDomain - The myshopify domain for the shop
+ * @returns {Promise<void>}
+ */
+export async function clearShopClaudeApiKey(shopDomain) {
+  try {
+    if (!prisma.shopConfig) {
+      throw new Error("Prisma client is missing shopConfig delegate. Restart the app process after prisma generate.");
+    }
+
+    await prisma.shopConfig.deleteMany({
+      where: { shopDomain }
+    });
+  } catch (error) {
+    console.error('Error clearing shop Claude API key:', error);
+    throw error;
+  }
+}
+
+/**
+ * Get a shop-specific Claude API key.
+ * @param {string} shopDomain - The myshopify domain for the shop
+ * @returns {Promise<string|null>} Claude API key or null if not configured
+ */
+export async function getShopClaudeApiKey(shopDomain) {
+  try {
+    if (!prisma.shopConfig) {
+      console.warn('Prisma client is missing shopConfig delegate. Restart the app process after prisma generate.');
+      return null;
+    }
+
+    const config = await prisma.shopConfig.findUnique({
+      where: { shopDomain },
+      select: { claudeApiKey: true }
+    });
+
+    return config?.claudeApiKey || null;
+  } catch (error) {
+    console.error('Error retrieving shop Claude API key:', error);
+    return null;
+  }
+}
+
+/**
+ * Check whether a shop has a configured Claude API key.
+ * @param {string} shopDomain - The myshopify domain for the shop
+ * @returns {Promise<boolean>} True when key is configured
+ */
+export async function hasShopClaudeApiKey(shopDomain) {
+  try {
+    if (!prisma.shopConfig) {
+      console.warn('Prisma client is missing shopConfig delegate. Restart the app process after prisma generate.');
+      return false;
+    }
+
+    const config = await prisma.shopConfig.findUnique({
+      where: { shopDomain },
+      select: { id: true }
+    });
+
+    return Boolean(config?.id);
+  } catch (error) {
+    console.error('Error checking shop Claude API key status:', error);
+    return false;
+  }
+}
