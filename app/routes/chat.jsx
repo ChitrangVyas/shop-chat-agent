@@ -47,6 +47,24 @@ export async function loader({ request }) {
     return handleChatRequest(request);
   }
 
+  // Health/info response for plain browser GETs via app proxy.
+  if (request.method === "GET") {
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        service: "chat",
+        message: "Use POST /chat for chat requests or GET /chat?history=true&conversation_id=... for history."
+      }),
+      {
+        status: 200,
+        headers: {
+          ...getCorsHeaders(request),
+          "Content-Type": "application/json"
+        }
+      }
+    );
+  }
+
   // API-only: reject all other requests
   return new Response(JSON.stringify({ error: AppConfig.errorMessages.apiUnsupported }), { status: 400, headers: getCorsHeaders(request) });
 }
@@ -141,18 +159,24 @@ async function handleChatSession({
 
   // Initialize MCP client
   const shopId = request.headers.get("X-Shopify-Shop-Id");
-  const shopDomain = request.headers.get("Origin");
-  
-  if (!shopDomain) {
+  const originHeader = request.headers.get("Origin") || "";
+  const explicitShopDomain = request.headers.get("X-Shopify-Shop-Domain") || "";
+  const shopQueryParam = new URL(request.url).searchParams.get("shop") || "";
+  const resolvedShopDomain = resolveShopDomain({
+    explicitShopDomain,
+    shopQueryParam,
+    originHeader,
+  });
+
+  if (!resolvedShopDomain) {
     stream.sendMessage({
       type: 'error',
-      error: 'Missing Origin header - shop domain cannot be determined'
+      error: 'Shop domain cannot be determined from request headers/query'
     });
-    throw new Error('Missing Origin header');
+    throw new Error('Shop domain cannot be determined');
   }
 
-  const explicitShopDomain = request.headers.get("X-Shopify-Shop-Domain") || "";
-  const resolvedShopDomain = explicitShopDomain || new URL(shopDomain).hostname;
+  const shopBaseUrl = `https://${resolvedShopDomain}`;
   const shopClaudeApiKey = await getShopClaudeApiKey(resolvedShopDomain);
   const claudeApiKey = shopClaudeApiKey || process.env.CLAUDE_API_KEY;
 
@@ -168,7 +192,7 @@ async function handleChatSession({
 
   let customerAccountUrls = null;
   try {
-    customerAccountUrls = await getCustomerAccountUrls(shopDomain, conversationId);
+    customerAccountUrls = await getCustomerAccountUrls(shopBaseUrl, conversationId);
   } catch (error) {
     console.warn('Failed to get customer account URLs:', error.message);
   }
@@ -176,7 +200,7 @@ async function handleChatSession({
   const mcpApiUrl = customerAccountUrls?.mcpApiUrl;
 
   const mcpClient = new MCPClient(
-    shopDomain,
+    shopBaseUrl,
     conversationId,
     shopId,
     mcpApiUrl,
@@ -509,4 +533,30 @@ function getSseHeaders(request) {
     "Access-Control-Allow-Methods": "GET,OPTIONS,POST",
     "Access-Control-Allow-Headers": "X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version"
   };
+}
+
+/**
+ * Resolve shop domain from headers/query for app proxy compatibility.
+ * @param {Object} params - Resolution inputs
+ * @param {string} params.explicitShopDomain - X-Shopify-Shop-Domain header
+ * @param {string} params.shopQueryParam - shop query parameter from app proxy
+ * @param {string} params.originHeader - Origin header from browser requests
+ * @returns {string} Normalized shop hostname or empty string
+ */
+function resolveShopDomain({ explicitShopDomain, shopQueryParam, originHeader }) {
+  const candidates = [explicitShopDomain, shopQueryParam, originHeader].filter(Boolean);
+
+  for (const candidate of candidates) {
+    try {
+      const value = String(candidate).trim();
+      const host = value.includes("://") ? new URL(value).hostname : value;
+      if (host && host.includes(".myshopify.com")) {
+        return host.toLowerCase();
+      }
+    } catch {
+      // Ignore invalid candidates and continue with fallbacks.
+    }
+  }
+
+  return "";
 }

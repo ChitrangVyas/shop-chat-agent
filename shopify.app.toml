@@ -1,8 +1,8 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "d0f32fd37c2bb5c15da1b37fa7b8558f"
-name = "Opal Infotech - Chat Agent"
-application_url = "https://opal-shopify-chatbot.vercel.app"
+client_id = "d70c86bb5ca40a3dbb7e2044e9be58f8"
+name = "Laxmi Live Chat"
+application_url = "https://laxmi-chat-agent.vercel.app"
 embedded = true
 
 [build]
@@ -14,10 +14,11 @@ api_version = "2026-07"
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
 scopes = "unauthenticated_read_product_listings"
-optional_scopes = [ ]
-use_legacy_install_flow = false
 
 [auth]
-redirect_urls = [ "https://opal-shopify-chatbot.vercel.app/api/auth" ]
+redirect_urls = [ "https://laxmi-chat-agent.vercel.app/auth/callback" ]
 
-
+[app_proxy]
+url = "https://laxmi-chat-agent.vercel.app/apps/chat-agent-opal"
+subpath = "chat-agent-opal"
+prefix = "apps"
