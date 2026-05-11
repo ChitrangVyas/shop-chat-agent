@@ -129,7 +129,7 @@ export default function Index() {
             </s-banner>
           ) : null}
 
-          <form method="post">
+          <form method="post" action=".">
             <input type="hidden" name="intent" value="save" />
             <s-stack gap="base">
               <input
@@ -143,7 +143,7 @@ export default function Index() {
             </s-stack>
           </form>
 
-          <form method="post">
+          <form method="post" action=".">
             <input type="hidden" name="intent" value="clear" />
             <button type="submit">Clear Claude API Key</button>
           </form>
