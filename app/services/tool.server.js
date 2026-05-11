@@ -10,6 +10,17 @@ import AppConfig from "./config.server";
  * @returns {Object} Tool service with methods for managing tools
  */
 export function createToolService() {
+  const formatToolResultContent = (content) => {
+    const serializedContent = typeof content === 'string' ? content : JSON.stringify(content);
+    const maxCharacters = AppConfig.api.maxToolResultCharacters;
+
+    if (!serializedContent || serializedContent.length <= maxCharacters) {
+      return serializedContent;
+    }
+
+    return `${serializedContent.slice(0, maxCharacters)}... [truncated ${serializedContent.length - maxCharacters} chars]`;
+  };
+
   /**
    * Handles a tool error response
    * @param {Object} toolUseResponse - The error response from the tool
@@ -118,12 +129,13 @@ export function createToolService() {
    * @param {string} conversationId - The conversation ID
    */
   const addToolResultToHistory = async (conversationHistory, toolUseId, content, conversationId) => {
+    const compactContent = formatToolResultContent(content);
     const toolResultMessage = {
       role: 'user',
       content: [{
         type: "tool_result",
         tool_use_id: toolUseId,
-        content: content
+        content: compactContent
       }]
     };
 

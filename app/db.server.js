@@ -166,6 +166,53 @@ export async function createOrUpdateConversation(conversationId) {
 }
 
 /**
+ * Get conversation summary metadata.
+ * @param {string} conversationId - The conversation ID
+ * @returns {Promise<Object|null>} - Summary and summary message count
+ */
+export async function getConversationSummary(conversationId) {
+  try {
+    const conversation = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+      select: {
+        summary: true,
+        summaryMessageCount: true
+      }
+    });
+
+    return conversation;
+  } catch (error) {
+    console.error('Error retrieving conversation summary:', error);
+    return null;
+  }
+}
+
+/**
+ * Update the stored conversation summary.
+ * @param {string} conversationId - The conversation ID
+ * @param {string} summary - The compact summary text
+ * @param {number} summaryMessageCount - Number of raw messages covered by the summary
+ * @returns {Promise<Object>} - The updated conversation record
+ */
+export async function updateConversationSummary(conversationId, summary, summaryMessageCount) {
+  try {
+    await createOrUpdateConversation(conversationId);
+
+    return await prisma.conversation.update({
+      where: { id: conversationId },
+      data: {
+        summary,
+        summaryMessageCount,
+        updatedAt: new Date()
+      }
+    });
+  } catch (error) {
+    console.error('Error updating conversation summary:', error);
+    throw error;
+  }
+}
+
+/**
  * Save a message to the database
  * @param {string} conversationId - The conversation ID
  * @param {string} role - The message role (user or assistant)

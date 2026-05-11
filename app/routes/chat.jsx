@@ -13,6 +13,8 @@ import MCPClient from "../mcp-client";
 import {
   saveMessage,
   getConversationHistory,
+  getConversationSummary,
+  updateConversationSummary,
   storeCustomerAccountUrls,
   getCustomerAccountUrls as getCustomerAccountUrlsFromDb,
   getShopClaudeApiKey,
@@ -232,25 +234,24 @@ async function handleChatSession({
 
     // Fetch all messages from the database for this conversation
     const dbMessages = await getConversationHistory(conversationId);
+    const conversationSummary = await getConversationSummary(conversationId);
+    const summaryState = await maybeRefreshConversationSummary({
+      claudeService,
+      conversationId,
+      dbMessages,
+      conversationSummary
+    });
 
     // Format messages for Claude API
-    conversationHistory = dbMessages.map(dbMessage => {
-      let content;
-      try {
-        content = JSON.parse(dbMessage.content);
-      } catch (e) {
-        content = dbMessage.content;
-      }
-      return {
-        role: dbMessage.role,
-        content
-      };
+    conversationHistory = buildConversationHistory({
+      dbMessages,
+      summaryState,
     });
 
     if (storefrontCart && typeof storefrontCart === 'object') {
       conversationHistory.push({
         role: 'assistant',
-        content: `Storefront cart context (existing shopper cart, read-only): ${JSON.stringify(storefrontCart)}. Use this context when the user asks what is currently in cart. If tool output differs, explain both clearly.`
+        content: buildStorefrontCartContext(storefrontCart)
       });
     }
 
@@ -370,6 +371,118 @@ async function handleChatSession({
 }
 
 /**
+ * Builds the conversation history from stored messages and an optional summary.
+ * @param {Object} params - History parameters
+ * @param {Array} params.dbMessages - Stored messages for the conversation
+ * @param {Object|null} params.summaryState - Stored summary metadata
+ * @returns {Array} Claude-ready conversation messages
+ */
+function buildConversationHistory({ dbMessages, summaryState }) {
+  const summaryText = summaryState?.summary || '';
+  const summaryMessageCount = Number(summaryState?.summaryMessageCount || 0);
+  const rawMessages = summaryMessageCount > 0
+    ? dbMessages.slice(summaryMessageCount)
+    : dbMessages;
+  const recentWindow = summaryText
+    ? Math.max(AppConfig.api.maxConversationMessages - 1, 1)
+    : AppConfig.api.maxConversationMessages;
+  const recentMessages = rawMessages.slice(-recentWindow);
+
+  const conversationHistory = [];
+
+  if (summaryText) {
+    conversationHistory.push({
+      role: 'assistant',
+      content: `Conversation summary so far:\n${summaryText}`
+    });
+  }
+
+  for (const dbMessage of recentMessages) {
+    let content;
+    try {
+      content = JSON.parse(dbMessage.content);
+    } catch (e) {
+      content = dbMessage.content;
+    }
+
+    conversationHistory.push({
+      role: dbMessage.role,
+      content
+    });
+  }
+
+  return conversationHistory;
+}
+
+/**
+ * Refreshes the stored conversation summary when the raw history grows too large.
+ * @param {Object} params - Summary parameters
+ * @param {Object} params.claudeService - Claude service instance
+ * @param {string} params.conversationId - Conversation ID
+ * @param {Array} params.dbMessages - Stored messages for the conversation
+ * @param {Object|null} params.conversationSummary - Stored summary metadata
+ * @returns {Promise<Object>} Updated summary state
+ */
+async function maybeRefreshConversationSummary({ claudeService, conversationId, dbMessages, conversationSummary }) {
+  const currentSummary = conversationSummary?.summary || '';
+  const summaryMessageCount = Number(conversationSummary?.summaryMessageCount || 0);
+  const unsummarizedMessages = summaryMessageCount > 0
+    ? dbMessages.slice(summaryMessageCount)
+    : dbMessages;
+
+  if (unsummarizedMessages.length <= AppConfig.api.summaryTriggerMessages) {
+    return {
+      summary: currentSummary,
+      summaryMessageCount
+    };
+  }
+
+  const recentMessagesToKeep = Math.max(AppConfig.api.summaryRecentMessages, 1);
+  const messagesToSummarize = unsummarizedMessages.slice(0, Math.max(unsummarizedMessages.length - recentMessagesToKeep, 0));
+
+  if (messagesToSummarize.length === 0) {
+    return {
+      summary: currentSummary,
+      summaryMessageCount
+    };
+  }
+
+  try {
+    const updatedSummary = await claudeService.summarizeConversation({
+      previousSummary: currentSummary,
+      messages: messagesToSummarize.map((message) => {
+        let content;
+        try {
+          content = JSON.parse(message.content);
+        } catch (error) {
+          content = message.content;
+        }
+
+        return {
+          role: message.role,
+          content
+        };
+      })
+    });
+
+    const nextSummaryMessageCount = summaryMessageCount + messagesToSummarize.length;
+
+    await updateConversationSummary(conversationId, updatedSummary, nextSummaryMessageCount);
+
+    return {
+      summary: updatedSummary,
+      summaryMessageCount: nextSummaryMessageCount
+    };
+  } catch (error) {
+    console.warn('Failed to refresh conversation summary:', error.message);
+    return {
+      summary: currentSummary,
+      summaryMessageCount
+    };
+  }
+}
+
+/**
  * Adds storefront cart identity to cart tool calls when missing.
  * @param {string} toolName - Tool name
  * @param {Object} toolArgs - Tool input arguments
@@ -444,6 +557,32 @@ function getCartArgNameFromSchema(toolName, tools) {
   }
 
   return propertyNames.find((name) => /cart.*(id|token)|^(id|token)$/i.test(name)) || null;
+}
+
+/**
+ * Builds a compact cart summary for Claude context.
+ * @param {Object} storefrontCart - Existing storefront cart snapshot
+ * @returns {string} Compact cart context string
+ */
+function buildStorefrontCartContext(storefrontCart) {
+  const compactCart = {
+    id: storefrontCart?.id || null,
+    token: storefrontCart?.token || null,
+    itemCount: Array.isArray(storefrontCart?.lines)
+      ? storefrontCart.lines.length
+      : (Array.isArray(storefrontCart?.items) ? storefrontCart.items.length : null),
+    currencyCode: storefrontCart?.currencyCode || storefrontCart?.currency || null,
+    totalPrice: storefrontCart?.cost?.totalAmount?.amount || storefrontCart?.totalPrice || null,
+  };
+
+  const serializedCart = JSON.stringify(compactCart);
+  const maxCharacters = AppConfig.api.maxCartContextCharacters;
+
+  if (serializedCart.length <= maxCharacters) {
+    return `Storefront cart context (existing shopper cart, read-only): ${serializedCart}. Use this context when the user asks what is currently in cart. If tool output differs, explain both clearly.`;
+  }
+
+  return `Storefront cart context (existing shopper cart, read-only): ${serializedCart.slice(0, maxCharacters)}... [truncated]. Use this context when the user asks what is currently in cart. If tool output differs, explain both clearly.`;
 }
 
 /**

@@ -58,6 +58,11 @@ This repo can be customized. You can:
 - Change the chat widget UI
 - Swap out the LLM
 
+The default Claude settings are tuned for lower cost than the original Opus configuration. You can override them with environment variables:
+- `CLAUDE_MODEL` to pick a different Anthropic model
+- `CLAUDE_MAX_TOKENS` to cap response length
+- `CLAUDE_CONTEXT_MESSAGES` to limit how much conversation history is sent on each turn
+
 You can learn how from our [dev docs](https://shopify.dev/docs/apps/build/storefront-mcp).
 
 ## Deployment

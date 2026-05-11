@@ -6,8 +6,14 @@
 export const AppConfig = {
   // API Configuration
   api: {
-    defaultModel: 'claude-opus-4-5-20251101',
-    maxTokens: 2000,
+    defaultModel: process.env.CLAUDE_MODEL || 'claude-haiku-4-5',
+    maxTokens: Number(process.env.CLAUDE_MAX_TOKENS || 1200),
+    maxConversationMessages: Number(process.env.CLAUDE_CONTEXT_MESSAGES || 12),
+    maxToolResultCharacters: Number(process.env.CLAUDE_MAX_TOOL_RESULT_CHARS || 1500),
+    maxCartContextCharacters: Number(process.env.CLAUDE_MAX_CART_CONTEXT_CHARS || 500),
+    summaryTriggerMessages: Number(process.env.CLAUDE_SUMMARY_TRIGGER_MESSAGES || 18),
+    summaryRecentMessages: Number(process.env.CLAUDE_SUMMARY_RECENT_MESSAGES || 8),
+    summaryMaxTokens: Number(process.env.CLAUDE_SUMMARY_MAX_TOKENS || 250),
     defaultPromptType: 'standardAssistant',
   },
 
